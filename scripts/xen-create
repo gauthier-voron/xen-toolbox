@@ -1,0 +1,120 @@
+#!/bin/sh
+
+VMDIR=$1 ; shift
+VMROOT="$VMDIR/xvda1.ext4"
+VMHOME="$VMDIR/xvda2.ext4"
+VMRAM="$VMDIR/initramfs.img"
+VMMNT="$VMDIR/mnt"
+VMCONF="$VMDIR/xen-config.conf"
+
+SIZE=$1; shift
+if [ "x$SIZE" = "x" ] ; then
+    SIZE=`df | grep ' /$' | awk '{print $3 }'`
+    SIZE=$(( $SIZE + 1000000 ))
+    SIZE=${SIZE}K
+fi
+SIZE=`perl -wl -e '$_=shift; /(.*)[Gg]$/ \
+        and print $1*1000000000 or print' $SIZE`    # Resolve Giga prefix
+SIZE=`perl -wl -e '$_=shift; /(.*)[Mm]$/ \
+        and print $1*1000000 or print' $SIZE`       # Resolve Mega prefix
+SIZE=`perl -wl -e '$_=shift; /(.*)[Kk]$/ \
+        and print $1*1000 or print' $SIZE`          # Resolve Kilo prefix
+
+EXCLUDE=
+for excl in "$@" ; do
+    EXCLUDE="$EXCLUDE --exclude=$excl"
+done
+
+die() {
+    MSG=$1; shift
+    echo "$0: $MSG" >&2
+    umount "$VMMNT" 2>/dev/null
+    rm -rf "$VMDIR"
+    exit 1
+}
+
+# Create the base directories
+mkdir "$VMDIR" || exit 1
+mkdir "$VMMNT"
+
+# Detect the current ramfs
+RAMFS=
+for f in /boot/init* ; do
+    [ "x$RAMFS" = "x" ] || break
+    [ "$f" = "/boot/initramfs-linux.img" ] && RAMFS="$f"
+    [ "$f" = "/boot/initrd.img-`uname -r`" ] && RAMFS="$f"
+done
+[ "x$RAMFS" = "x" ] && die "cannot find ramfs"
+
+# Detect the current kernel
+KERNEL=
+for f in /boot/vmlinuz-* ; do
+    [ "x$KERNEL" = "x" ] || break
+    [ "$f" = "/boot/vmlinuz-linux" ] && KERNEL="$f"
+    [ "$f" = "/boot/vmlinuz-`uname -r`" ] && KERNEL="$f"
+done
+[ "x$KERNEL" = "x" ] && die "cannot find kernel"
+
+# Create and format the root partition
+truncate -s $SIZE "$VMROOT"
+yes | mkfs.ext4 "$VMROOT"
+mount -o loop "$VMROOT" "$VMMNT" || die "cannot mount root partition"
+
+# Synchronize with the host root partition
+rsync -aAHXzv --delete-delay                              \
+  --exclude={/mnt/*,/home/*,/dev/*,/media/*}              \
+  --exclude={/proc/*,/run/*,/tmp/*,/sys/*,/var/cache/*}   \
+  $EXCLUDE                                                \
+  / "$VMMNT/" || die "cannot synchronize root partition"
+
+# Create an empty home partition
+truncate -s 1M "$VMHOME" || die "cannot create home partition"
+yes | mkfs.ext4 "$VMHOME"
+
+# Modify the fstab to correspond to a Xen system
+(
+    echo '#' 
+    echo '# /etc/fstab: static file system information'
+    echo '#'
+    echo '# <file system><dir><type><options><dump><pass>'
+    echo ''
+    echo '/dev/xvda1 / ext4 ro,relatime,data=ordered 0 1'
+    echo '/dev/xvda2 /home ext4 rw,relatime,data=ordered 0 1'
+) >"$VMMNT/etc/fstab"
+
+# Modify the hostname
+echo "$VMDIR" > "$VMMNT/etc/hostname"
+
+# Remove passwords for all users
+sed -ri 's/^([^:]+):[^:]+:(.*)$/\1::\2/' "$VMMNT/etc/shadow"
+
+# Try to find the login configuration and set the console to hvc0
+# (usefull under Ubuntu)
+[ -e "$VMMNT/etc/init/tty1.conf" ] \
+    && sed -r 's/tty1/hvc0/g' "$VMMNT/etc/init/tty1.conf" \
+    > "$VMMNT/etc/init/hvc0.conf"
+
+# Try to find the rc-sysinit and remove network configuration waiting
+# (usefull under Ubuntu)
+[ -e "$VMMNT/etc/init/rc-sysinit.conf" ] \
+    && sed -ri 's/filesystem and static-network-up/filesystem/' \
+    "$VMMNT/etc/init/rc-sysinit.conf"
+
+# Umount the root to be ready
+umount "$VMMNT"
+
+# Add the xen modules to a cpoy of the ramfs
+dir="/lib/modules/`uname -r`/kernel/drivers/block"
+ramfs-add-modules "$RAMFS" "$VMRAM" `find "$dir" -type f -name "*xen*"`
+
+# Write the xen configuration file
+(
+    echo "kernel = \"$KERNEL\""
+    echo "ramdisk = \"`realpath $VMRAM`\""
+    echo "memory = 2000"
+    echo "name = \"$VMDIR\""
+    echo "disk = [\"`realpath $VMROOT`,raw,xvda1,r\""
+    echo "       ,\"`realpath $VMHOME`,raw,xvda2,rw\"]"
+    echo "root = \"/dev/xvda1 ro\""
+    echo "extra = \"console=hvc0 xencons=tty\""
+) >"$VMCONF"

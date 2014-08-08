@@ -1,0 +1,129 @@
+#!/bin/sh
+
+VMDIR=$1 ; shift
+VMROOT="$VMDIR/xvda1.ext4"
+VMHOME="$VMDIR/xvdb1.ext4"
+VMRAM="$VMDIR/initramfs.img"
+VMMNT="$VMDIR/mnt"
+VMCONF="$VMDIR/xen-config.conf"
+VMIMG="$VMDIR/xvda.img"
+
+
+[ -d "$VMDIR" ] || exit 1
+[ -e "$VMROOT" ] || exit 1
+[ -e "$VMHOME" ] || exit 1
+[ -e "$VMRAM" ] || exit 1
+[ -d "$VMMNT" ] || exit 1
+[ -e "$VMCONF" ] || exit 1
+    
+
+if xl list | grep -q "^$VMDIR" ; then
+    echo "cannot set '$VMDIR' into HVM: already running" >&2
+    exit 1
+fi
+
+
+die() {
+    MSG=$1; shift
+    echo "$0: $MSG" >&2
+    umount "$VMMNT" 2>/dev/null
+    rm -rf "$VMDIR"
+    exit 1
+}
+
+
+# Detect the current ramfs
+RAMFS=
+for f in /boot/init* ; do
+    [ "x$RAMFS" = "x" ] || break
+    [ "$f" = "/boot/initramfs-linux.img" ] && RAMFS="$f"
+    [ "$f" = "/boot/initrd.img-`uname -r`" ] && RAMFS="$f"
+done
+[ "x$RAMFS" = "x" ] && die "cannot find ramfs"
+
+# Detect the current kernel
+KERNEL=
+for f in /boot/vmlinuz-* ; do
+    [ "x$KERNEL" = "x" ] || break
+    [ "$f" = "/boot/vmlinuz-linux" ] && KERNEL="$f"
+    [ "$f" = "/boot/vmlinuz-`uname -r`" ] && KERNEL="$f"
+done
+[ "x$KERNEL" = "x" ] && die "cannot find kernel"
+
+
+mount "$VMROOT" "$VMMNT" || die "cannot mount '$VMROOT' on '$VMMNT'"
+
+sed -e 's/^.dev.xvda1.*/\/dev\/xvda1 \/ ext4 rw,relatime,data=ordered 0 1/' \
+    -i "$VMMNT/etc/fstab" || die "cannot modify domU fstab"
+
+sed -e 's/^GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="console=ttyS0 /' \
+    -e 's/^GRUB_TERMINAL_INPUT/#GRUB_TERMINAL_INPUT/' \
+    -e 's/^GRUB_TERMINAL_OUTPUT/#GRUB_TERMINAL_OUTPUT/' \
+    -e '/^GRUB_CMDLINE_LINUX=/ aGRUB_TERMINAL="serial"' \
+    -e 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/' \
+    -i "$VMMNT/etc/default/grub" || die "cannot modify domU grub config"
+
+find -L "$VMMNT/boot/" -type f -exec rm {} \; || die "cannot clean /boot"
+cp "$VMRAM" "$VMMNT/$RAMFS" || die "cannot set the new ramfs"
+cp "$KERNEL" "$VMMNT/boot/" || die "cannot copy the kernel"
+
+umount "$VMMNT" || die "cannot umount '$VMMNT'"
+
+
+ADDSIZE=1048576     # 2048 sectors, each 512 bytes
+
+truncate -s $ADDSIZE "$VMIMG" || die "cannot create '$VMIMG'"
+
+cat "$VMROOT" >> "$VMIMG" || die "cannot transform '$VMROOT'"
+
+(
+    echo "n"        # Create new partition
+    echo "p"        # Select primary partition
+    echo "1"        # Select partition number 1
+    echo "2048"     # Select start sector
+    echo ""         # Select default size
+    echo "a"        # Toogle bootable flag
+    echo "w"        # Write new partition table
+) | fdisk "$VMIMG" >/dev/null \
+    || die "cannot create partition table on '$VMIMG'"
+
+
+(
+    echo "kernel = \"$KERNEL\""
+    echo "ramdisk = \"`realpath $VMRAM`\""
+    echo "memory = 2000"
+    echo "name = \"$VMDIR\""
+    echo "disk = [\"`realpath $VMIMG`,raw,xvda,rw\""
+    echo "       ,\"`realpath $VMHOME`,raw,xvdb1,rw\"]"
+    echo "root = \"/dev/xvda1 rw\""
+    echo "extra = \"console=hvc0 xencons=tty\""
+) > "$VMCONF"
+
+
+xen-boot "$VMDIR" || die "cannot boot '$VMDIR'"
+xen-login "$VMDIR" || die "cannot login on '$VMDIR'"
+xen-command "$VMDIR" "grub-install /dev/xvda" \
+    || die "cannot install grub on '$VMDIR'"
+xen-command "$VMDIR" "grub-mkconfig -o /boot/grub/grub.cfg" \
+    || die "cannot mkconfig grub on '$VMDIR'"
+xen-shutdown "$VMDIR"
+
+(
+    echo "builder = \"hvm\""
+    echo "memory = 2000"
+    echo "name = \"$VMDIR\""
+    echo "disk = [\"`realpath $VMIMG`,raw,xvda,r\""
+    echo "       ,\"`realpath $VMHOME`,raw,xvdb1,rw\"]"
+    echo "serial = \"pty\""
+) > "$VMCONF"
+
+rm "$VMRAM"
+rm "$VMROOT"
+
+mount -o offset=$ADDSIZE "$VMIMG" "$VMMNT" \
+    || die "cannot mount '$VMIMG' on '$VMMNT'"
+
+sed -e 's/^.dev.xvda1.*/\/dev\/xvda1 \/ ext4 ro,relatime,data=ordered 0 1/' \
+    -i "$VMMNT/etc/fstab" || die "cannot modify domU fstab"
+
+umount "$VMMNT"

@@ -71,7 +71,7 @@ for VMDIR in "$@" ; do
     VMCOUT=$(( $VMCOUT - 1 ))
 
     VMROOT="$VMDIR/xvda1.ext4"
-    VMHOME="$VMDIR/xvda2.ext4"
+    VMHOME="$VMDIR/xvdb1.ext4"
     VMMNT="$VMDIR/mnt"
     VMCONF="$VMDIR/xen-config.conf"
 
@@ -99,7 +99,7 @@ for VMDIR in "$@" ; do
     # Umount the partition
     umount "$VMMNT" 2>/dev/null 
 
-    # Commit the temp file into xvda2
+    # Commit the temp file into xvdb1
     mv "$file" "$VMHOME" 2>/dev/null 
     file=
 done

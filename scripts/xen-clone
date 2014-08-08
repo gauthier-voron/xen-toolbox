@@ -37,9 +37,9 @@ for VMDEST in "$@" ; do
 	2>/dev/null || error "cannot copy conf"
 
     # Create a new empty home
-    truncate -s 1M "$VMDEST/xvda2.ext4" \
+    truncate -s 1M "$VMDEST/xvdb1.ext4" \
 	2>/dev/null || error "cannot create home"
-    yes | mkfs.ext4 "$VMDEST/xvda2.ext4" >/dev/null 2>/dev/null
+    yes | mkfs.ext4 "$VMDEST/xvdb1.ext4" >/dev/null 2>/dev/null
 
     # Update the paths in xen-config.conf
     sed -ri '/^\s*ramdisk/d' "$VMDEST/xen-config.conf"
@@ -50,7 +50,7 @@ for VMDEST in "$@" ; do
 	echo "ramdisk = \"`realpath $VMDEST/initramfs.img`\""
 	echo "name = \"$VMDEST\""
 	echo "disk = [\"`realpath $VMDEST/xvda1.ext4`,raw,xvda1,r\""
-	echo "       ,\"`realpath $VMDEST/xvda2.ext4`,raw,xvda2,rw\"]"
+	echo "       ,\"`realpath $VMDEST/xvdb1.ext4`,raw,xvdb1,rw\"]"
     ) >>"$VMDEST/xen-config.conf"
 done
 

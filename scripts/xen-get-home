@@ -3,7 +3,7 @@
 VMDIR=$1 ; shift
 VMMNT="$VMDIR/mnt"
 HOME=$1 ; shift
-VMHOME="$VMDIR/xvda2.ext4"
+VMHOME="$VMDIR/xvdb1.ext4"
 
 
 die() {

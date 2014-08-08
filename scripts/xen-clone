@@ -26,32 +26,52 @@ for VMDEST in "$@" ; do
     mkdir "$VMDEST" \
 	2>/dev/null || error "cannot create '$VMDEST'"
 
+    # Create a new empty home
+    truncate -s 1M "$VMDEST/xvdb1.ext4" \
+	2>/dev/null || error "cannot create home"
+    yes | mkfs.ext4 "$VMDEST/xvdb1.ext4" >/dev/null 2>/dev/null
+
 
     # Perform the cheap copy of VMSRC
     mkdir "$VMDEST/mnt" || error "cannot create '$VMDEST/mnt'"
-    ln "$VMSRC/initramfs.img" "$VMDEST/initramfs.img" \
-	2>/dev/null || error "cannot copy ramfs"
-    ln "$VMSRC/xvda1.ext4" "$VMDEST/xvda1.ext4" \
-	2>/dev/null || error "cannot copy root disk"
     cp "$VMSRC/xen-config.conf" "$VMDEST/xen-config.conf" \
 	2>/dev/null || error "cannot copy conf"
 
-    # Create a new empty home
-    truncate -s 1M "$VMDEST/xvda2.ext4" \
-	2>/dev/null || error "cannot create home"
-    yes | mkfs.ext4 "$VMDEST/xvda2.ext4" >/dev/null 2>/dev/null
-
-    # Update the paths in xen-config.conf
+    # Remove the paths in xen-config.conf
     sed -ri '/^\s*ramdisk/d' "$VMDEST/xen-config.conf"
-    sed -ri '/^\s*(disk|,).*xvda/d' "$VMDEST/xen-config.conf"
+    sed -ri '/^\s*(disk|,).*xvd[ab]/d' "$VMDEST/xen-config.conf"
     sed -ri '/^\s*name/d' "$VMDEST/xen-config.conf"
 
-    (
-	echo "ramdisk = \"`realpath $VMDEST/initramfs.img`\""
-	echo "name = \"$VMDEST\""
-	echo "disk = [\"`realpath $VMDEST/xvda1.ext4`,raw,xvda1,r\""
-	echo "       ,\"`realpath $VMDEST/xvda2.ext4`,raw,xvda2,rw\"]"
-    ) >>"$VMDEST/xen-config.conf"
+
+    if [ -e "$VMSRC/xvda1.ext4" ] ; then    # If it is a PV domU
+	ln "$VMSRC/initramfs.img" "$VMDEST/initramfs.img" \
+	    2>/dev/null || error "cannot copy ramfs"
+	ln "$VMSRC/xvda1.ext4" "$VMDEST/xvda1.ext4" \
+	    2>/dev/null || error "cannot copy root disk"
+
+	# Set new paths in xen-config.conf
+	(
+	    echo "ramdisk = \"`realpath $VMDEST/initramfs.img`\""
+	    echo "name = \"$VMDEST\""
+	    echo "disk = [\"`realpath $VMDEST/xvda1.ext4`,raw,xvda1,r\""
+	    echo "       ,\"`realpath $VMDEST/xvdb1.ext4`,raw,xvdb1,rw\"]"
+	) >>"$VMDEST/xen-config.conf"
+    elif [ -e "$VMSRC/xvda.img" ] ; then    # If it is an HVM domU
+	ln "$VMSRC/xvda.img" "$VMDEST/xvda.img" \
+	    2>/dev/null || error "cannot copy root disk"
+
+	# Set new paths in xen-config.conf
+	(
+	    echo "name = \"$VMDEST\""
+	    echo "disk = [\"`realpath $VMDEST/xvda.img`,raw,xvda,r\""
+	    echo "       ,\"`realpath $VMDEST/xvdb1.ext4`,raw,xvdb1,rw\"]"
+	) >>"$VMDEST/xen-config.conf"
+    else                                    # If it is invalid
+	error "neither PV nor HVM"
+    fi
+
+
+
 done
 
 [ "x$VMDEST" = "x" ] && die "no destination specified"

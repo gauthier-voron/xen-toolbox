@@ -22,9 +22,10 @@ for VMNAME in "$@" ; do
     # Read the result, since root is not a valid command, try to grep
     # a 'command not found' answer indicating we are in a shell
     while true ; do
-	echo 'root' | xl console "$VMNAME" | grep -q 'command not found' \
-	    && break
-	sleep 1
+	(
+	    echo 'root'
+	    sleep 1
+	) | xl console "$VMNAME" | grep -q 'command not found' && break
     done
 
 done

@@ -70,14 +70,12 @@ for VMDIR in "$@" ; do
     [ $VMCOUT -eq 0 ] && break
     VMCOUT=$(( $VMCOUT - 1 ))
 
-    VMROOT="$VMDIR/xvda1.ext4"
     VMHOME="$VMDIR/xvdb1.ext4"
     VMMNT="$VMDIR/mnt"
     VMCONF="$VMDIR/xen-config.conf"
 
     [ -d "$VMDIR" ] || error "cannot find vm '$VMDIR'"
     [ -d "$VMMNT" ] || error "cannot find '$VMMNT' for vm '$VMDIR'"
-    [ -f "$VMROOT" ] || error "cannot find '$VMROOT' for vm '$VMDIR'"
     [ -f "$VMCONF" ] || error "cannot find '$VMCONF' for vm '$VMDIR'"
     [ -f "$VMHOME" ] || error "cannot find '$VMHOME' for vm '$VMDIR'"
 

@@ -8,7 +8,7 @@ VMHOME="$VMDIR/xvdb1.ext4"
 
 die() {
     MSG=$1; shift
-    echo "$$0: $MNT" >&2
+    echo "$0: $MSG" >&2
     umount "$VMMNT" 2>/dev/null
     exit 1
 }

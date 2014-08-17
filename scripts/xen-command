@@ -44,6 +44,5 @@ xl list | grep -Eq "^$VMNAME\s+" \
 
 # Now just grep the opposite magic string
 while true ; do
-    echo '' | xl console "$VMNAME" | grep -qE "$RCMAGIC" && break
-    sleep 1
+    ( echo '' ; sleep 1 ) | xl console "$VMNAME" | grep -qE "$RCMAGIC" && break
 done

@@ -51,12 +51,20 @@ done
 [ "x$KERNEL" = "x" ] && die "cannot find kernel"
 
 
-mount "$VMROOT" "$VMMNT" || die "cannot mount '$VMROOT' on '$VMMNT'"
+ADDSIZE=1048576     # 2048 sectors, each 512 bytes
+truncate -s $ADDSIZE "$VMIMG" || die "cannot create '$VMIMG'"
+
+cat "$VMROOT" >> "$VMIMG" || die "cannot transform '$VMROOT'"
+rm "$VMROOT"
+SECTORS=$(( `stat -c '%s' "$VMIMG"` / ( 255 * 63 * 512 ) ))
+
+mount -o loop,offset=$ADDSIZE "$VMIMG" "$VMMNT" \
+    || die "cannot mount '$VMROOT' on '$VMMNT'"
 
 sed -e 's/^.dev.xvda1.*/\/dev\/xvda1 \/ ext4 rw,relatime,data=ordered 0 1/' \
     -i "$VMMNT/etc/fstab" || die "cannot modify domU fstab"
 
-sed -e 's/^GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="console=ttyS0 /' \
+sed -e 's/^GRUB_CMDLINE_LINUX=.*/GRUB_CMDLINE_LINUX="console=ttyS0 root=\/dev\/xvda1 ro"/' \
     -e 's/^GRUB_TERMINAL_INPUT/#GRUB_TERMINAL_INPUT/' \
     -e 's/^GRUB_TERMINAL_OUTPUT/#GRUB_TERMINAL_OUTPUT/' \
     -e '/^GRUB_CMDLINE_LINUX=/ aGRUB_TERMINAL="serial"' \
@@ -67,14 +75,14 @@ find -L "$VMMNT/boot/" -type f -exec rm {} \; || die "cannot clean /boot"
 cp "$VMRAM" "$VMMNT/$RAMFS" || die "cannot set the new ramfs"
 cp "$KERNEL" "$VMMNT/boot/" || die "cannot copy the kernel"
 
+# Try to find the login configuration and set the console to ttyS0
+# (usefull under Ubuntu)
+[ -e "$VMMNT/etc/init/tty1.conf" ] \
+    && sed -r 's/tty1/ttyS0/g' "$VMMNT/etc/init/tty1.conf" \
+    > "$VMMNT/etc/init/ttyS0.conf"
+
 umount "$VMMNT" || die "cannot umount '$VMMNT'"
 
-
-ADDSIZE=1048576     # 2048 sectors, each 512 bytes
-
-truncate -s $ADDSIZE "$VMIMG" || die "cannot create '$VMIMG'"
-
-cat "$VMROOT" >> "$VMIMG" || die "cannot transform '$VMROOT'"
 
 (
     echo "n"        # Create new partition
@@ -83,8 +91,9 @@ cat "$VMROOT" >> "$VMIMG" || die "cannot transform '$VMROOT'"
     echo "2048"     # Select start sector
     echo ""         # Select default size
     echo "a"        # Toogle bootable flag
+    echo "1"        # Select partition 1
     echo "w"        # Write new partition table
-) | fdisk "$VMIMG" >/dev/null \
+) | fdisk -C $SECTORS "$VMIMG" >/dev/null \
     || die "cannot create partition table on '$VMIMG'"
 
 
@@ -99,7 +108,6 @@ cat "$VMROOT" >> "$VMIMG" || die "cannot transform '$VMROOT'"
     echo "extra = \"console=hvc0 xencons=tty\""
 ) > "$VMCONF"
 
-
 xen-boot "$VMDIR" || die "cannot boot '$VMDIR'"
 xen-login "$VMDIR" || die "cannot login on '$VMDIR'"
 xen-command "$VMDIR" "grub-install /dev/xvda" \
@@ -107,6 +115,8 @@ xen-command "$VMDIR" "grub-install /dev/xvda" \
 xen-command "$VMDIR" "grub-mkconfig -o /boot/grub/grub.cfg" \
     || die "cannot mkconfig grub on '$VMDIR'"
 xen-shutdown "$VMDIR"
+
+rm "$VMRAM"
 
 (
     echo "builder = \"hvm\""
@@ -117,10 +127,7 @@ xen-shutdown "$VMDIR"
     echo "serial = \"pty\""
 ) > "$VMCONF"
 
-rm "$VMRAM"
-rm "$VMROOT"
-
-mount -o offset=$ADDSIZE "$VMIMG" "$VMMNT" \
+mount -o loop,offset=$ADDSIZE "$VMIMG" "$VMMNT" \
     || die "cannot mount '$VMIMG' on '$VMMNT'"
 
 sed -e 's/^.dev.xvda1.*/\/dev\/xvda1 \/ ext4 ro,relatime,data=ordered 0 1/' \

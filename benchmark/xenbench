@@ -8,7 +8,7 @@ use warnings;
 # store them in hashes for further use.
 
 my @xen_monitor;        # dom0 monitoring commands
-my @domu;               # domu names
+my %domu_type;          # domu type
 my %domu_memory;        # domu memory spec if any
 my %domu_vcpus;         # domu vcpus spec if any
 my %domu_pin;           # domu pinning spec if any
@@ -23,8 +23,8 @@ sub inner
     my ($event, %props) = @_;
 
     # When encountering a domu node, store all provided configuration
-    if ($event eq 'domu') {
-	push @domu, $props{name};
+    if ($event eq 'pv' || $event eq 'hvm') {
+	$domu_type{$props{name}} = $event;
 	$current_domu = $props{name};
 	$domu_memory{$current_domu} = $props{memory};
 	$domu_vcpus{$current_domu} = $props{vcpus};
@@ -37,14 +37,14 @@ sub inner
     if ($event eq 'monitor') {
 	if ($stack[0] eq 'xen') {       # If upper node is xen, then it is dom0
 	    push @xen_monitor, $props{command};
-	} elsif ($stack[0] eq 'domu') { # If upper node is domu, ... domu
+	} elsif ($stack[0] eq 'pv' || $stack[0] eq 'hvm') { # If domu, ... domu
 	    push @{$domu_monitor{$current_domu}}, $props{command};
 	}
     }
 
     # It cannot be any run command in dom0
     if ($event eq 'run') {
-	if ($stack[0] eq 'domu') {
+	if ($stack[0] eq 'pv' || $stack[0] eq 'hvm') {
 	    push @{$domu_run{$current_domu}}, $props{command};
 	}
     }
@@ -122,8 +122,9 @@ sub date
 }
 
 my %uniq;                                          # Used to remove doublet
-my $vmbase='vm';                                   # Raw created Xen DomU VM
-my @vms = @domu;                                   # Array of DomU VMs
+my $pvbase = 'base-pv';                            # Raw created Xen PV DomU
+my $hvmbase = 'base-hvm';                          # Raw created Xen HVM DomU
+my @vms = keys %domu_type;                         # Array of DomU VMs
 my $vmsstr = join ' ', (map { "\"$_\"" } @vms);    # List of DomU VMs
 my @benchs = map { /^(\w+)/ ; $1 } map { @{$_} } (values %domu_run);
 my @monits = map { /^(\w+)/ ; $1 } map { @{$_} } (values %domu_monitor);
@@ -158,16 +159,29 @@ foreach (@monits, @benchs) {
     `cp $loc $result/tools/`;
 }
 
-# Create the raw VM
-unless (-e $vmbase) {
-    print "Creating basic DomU";
-    system "xen-create \"$vmbase\"" || exit 1;
+# Create the raw PV VM
+unless (-e $pvbase) {
+    print "Creating basic PV DomU";
+    system "xen-create \"$pvbase\"" || exit 1;
+}
+
+# Create the raw HVM VM
+unless (-e $hvmbase || (grep { $_ eq 'hvm' } values %domu_type) == 0) {
+    print "Creating basic HVM DomU";
+    system "xen-clone \"$pvbase\" \"$hvmbase\"" || exit 1;
+    system "xen-hvm \"$hvmbase\"" || exit 1;
 }
 
 # Create and configure all the required Xen DomU VMs by cloning them from the
 # raw basic VM
 print "Building DomUs";
-system "xen-clone \"$vmbase\" $vmsstr" || exit 1;
+foreach (@vms) {
+    if ($domu_type{$_} eq 'pv') {
+        system "xen-clone \"$pvbase\" $_" || exit 1;
+    } elsif ($domu_type{$_} eq 'hvm') {
+        system "xen-clone \"$hvmbase\" $_" || exit 1;
+    }    
+}
 foreach (@vms) {
     my $mem = $domu_memory{$_};
     my $vcpus = $domu_vcpus{$_};
@@ -179,7 +193,6 @@ foreach (@vms) {
     (system "xen-pin \"$_\" $pin" || exit 1) if (defined $pin);
     system "xen-set-home \"$_\" \"$result\" $size" || exit 1;
 }
-
 
 sub stop
 {

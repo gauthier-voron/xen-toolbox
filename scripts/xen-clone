@@ -57,7 +57,9 @@ for VMDEST in "$@" ; do
 	    echo "       ,\"`realpath $VMDEST/xvdb1.ext4`,raw,xvdb1,rw\"]"
 	) >>"$VMDEST/xen-config.conf"
     elif [ -e "$VMSRC/xvda.img" ] ; then    # If it is an HVM domU
-	ln "$VMSRC/xvda.img" "$VMDEST/xvda.img" \
+        # Xen is actually not able to understand the meaning of "read-only"
+        # so make a deep copy and the clone should be used only once.
+	cp "$VMSRC/xvda.img" "$VMDEST/xvda.img" \
 	    2>/dev/null || error "cannot copy root disk"
 
 	# Set new paths in xen-config.conf

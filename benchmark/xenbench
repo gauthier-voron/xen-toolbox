@@ -1,0 +1,270 @@
+#!/usr/bin/perl -l
+use strict;
+use warnings;
+
+
+# Extracting informations part
+# At the moment their are parsed, xml data come in these subroutines which
+# store them in hashes for further use.
+
+my @xen_monitor;        # dom0 monitoring commands
+my %domu_type;          # domu type
+my %domu_memory;        # domu memory spec if any
+my %domu_vcpus;         # domu vcpus spec if any
+my %domu_pin;           # domu pinning spec if any
+my %domu_run;           # domu array of command
+my %domu_size;          # domu home size
+my %domu_monitor;       # domu array of monitoring command
+my @stack;              # xml stack
+my $current_domu;       # last domu name
+
+sub inner
+{
+    my ($event, %props) = @_;
+
+    # When encountering a domu node, store all provided configuration
+    if ($event eq 'pv' || $event eq 'hvm') {
+	$domu_type{$props{name}} = $event;
+	$current_domu = $props{name};
+	$domu_memory{$current_domu} = $props{memory};
+	$domu_vcpus{$current_domu} = $props{vcpus};
+	$domu_pin{$current_domu} = $props{pin};
+	$domu_size{$current_domu} = $props{size};
+    }
+
+    # When encountering a monitor node, it is either a dom0 or a domu
+    # monitoring
+    if ($event eq 'monitor') {
+	if ($stack[0] eq 'xen') {       # If upper node is xen, then it is dom0
+	    push @xen_monitor, $props{command};
+	} elsif ($stack[0] eq 'pv' || $stack[0] eq 'hvm') { # If domu, ... domu
+	    push @{$domu_monitor{$current_domu}}, $props{command};
+	}
+    }
+
+    # It cannot be any run command in dom0
+    if ($event eq 'run') {
+	if ($stack[0] eq 'pv' || $stack[0] eq 'hvm') {
+	    push @{$domu_run{$current_domu}}, $props{command};
+	}
+    }
+
+    # For convenience, stack is reversed, so the top is always $stack[0]
+    unshift @stack, $event;
+}
+
+sub outer
+{
+    my ($event) = @_;
+    shift @stack;
+}
+
+
+# Data acquisition part
+# Read an XML configuration file and parse the XML to give the data to the
+# extracting part above
+
+my $filename = $ARGV[0] || '';
+my ($raw, $data);
+{
+    local undef $/;
+    $raw = <>;            # Make a slurp
+}
+$data = $raw;
+$data =~ s/\n//g;         # Pack all the lines into one
+$data =~ s/\s+/ /g;       # Reduce all the space bundles
+
+my ($event, $prop, %props, $outer);
+while ($data) {
+    # Match <NODE>
+    #       <NODE/>
+    #       <NODE KEYS=VALUES>
+    #       <NODE KEYS=VALUES/>
+    if ($data =~ /^<(\w+)\s*(.*?)(\/?)>\s*(.*)$/) {
+	$event = $1;
+	$prop = $2;
+	$outer = $3;
+	$data = $4;
+	
+	while ($prop) {
+	    $prop =~ /^(\w+)="(.*?)"\s*(.*)$/ or last;
+	    $props{$1} = $2;
+	    $prop = $3;
+	}
+
+	inner $event, %props;
+	outer $event if ($outer eq '/');
+
+	%props = ();
+
+    # Match </NODE>
+    } elsif ($data =~ /^<\/(\w+)>\s*(.*)$/) {
+	$event = $1;
+
+	outer $event;
+
+	$data = $2;
+    }
+}
+
+
+# Setup part
+# Create the wanted setup in order to run the benchmarks
+# Build the benchamrk suite, the DomU VMs
+
+sub date
+{
+    my $time = time;
+    my ($s, $n, $h, $d, $m, $y) = localtime $time;
+    $y += 1900;
+    $m++;
+    return sprintf('%04d-%02d-%02d-%02d-%02d-%02d', $y, $m, $d, $h, $n, $s);
+}
+
+my %uniq;                                          # Used to remove doublet
+my $pvbase = 'base-pv';                            # Raw created Xen PV DomU
+my $hvmbase = 'base-hvm';                          # Raw created Xen HVM DomU
+my @vms = keys %domu_type;                         # Array of DomU VMs
+my $vmsstr = join ' ', (map { "\"$_\"" } @vms);    # List of DomU VMs
+my @benchs = map { /^(\w+)/ ; $1 } map { @{$_} } (values %domu_run);
+my @monits = map { /^(\w+)/ ; $1 } map { @{$_} } (values %domu_monitor);
+my $result = date;
+
+%uniq = ();
+@benchs = grep { ! $uniq{$_}++ } @benchs;
+
+%uniq = ();
+@monits = grep { ! $uniq{$_}++ } @monits;
+
+if ($filename) {
+    $filename =~ s|^.*/(.*)$|$1|;
+    $filename =~ s|^(.*)\.(.*)|$1|;
+    $result = $filename . '.' . $result;
+}
+
+mkdir "$result" || die $!;
+mkdir "$result/log" || die $!;
+
+# Build all the benchmark suites on the $result directory
+# We expect, for all required banchmarks, it exists a build-<bench> script
+print "Building Benchmarks";
+`build-$_ $result/$_` foreach (@benchs);
+
+# Prepare to transfer all required tools into VMs
+# Put them in $result/tools, it will be given as /home partition to each VM
+mkdir "$result/tools" || die $!;
+foreach (@monits, @benchs) {
+    my $loc = `which $_`;
+    $loc =~ s/\n//g;
+    `cp $loc $result/tools/`;
+}
+
+# Create the raw PV VM
+unless (-e $pvbase) {
+    print "Creating basic PV DomU";
+    system "xen-create \"$pvbase\"" || exit 1;
+}
+
+# Create the raw HVM VM
+unless (-e $hvmbase || (grep { $_ eq 'hvm' } values %domu_type) == 0) {
+    print "Creating basic HVM DomU";
+    system "xen-clone \"$pvbase\" \"$hvmbase\"" || exit 1;
+    system "xen-hvm \"$hvmbase\"" || exit 1;
+}
+
+# Create and configure all the required Xen DomU VMs by cloning them from the
+# raw basic VM
+print "Building DomUs";
+foreach (@vms) {
+    if ($domu_type{$_} eq 'pv') {
+        system "xen-clone \"$pvbase\" $_" || exit 1;
+    } elsif ($domu_type{$_} eq 'hvm') {
+        system "xen-clone \"$hvmbase\" $_" || exit 1;
+    }    
+}
+foreach (@vms) {
+    my $mem = $domu_memory{$_};
+    my $vcpus = $domu_vcpus{$_};
+    my $pin = $domu_pin{$_};
+    my $size = $domu_size{$_} || '';
+
+    (system "xen-set-memory \"$_\" $mem" || exit 1) if (defined $mem);
+    (system "xen-set-vcpus \"$_\" $vcpus" || exit 1) if (defined $vcpus);
+    (system "xen-pin \"$_\" $pin" || exit 1) if (defined $pin);
+    system "xen-set-home \"$_\" \"$result\" $size" || exit 1;
+}
+
+sub stop
+{
+    print "Aborting";
+    system "xen-shutdown $vmsstr";
+    exit 1;
+}
+
+# Booting all the Xen DomU VMs and then wait to login on each of them
+print "Booting DomUs";
+system "xen-boot $vmsstr" || stop;
+system "xen-login $vmsstr" || stop;
+
+# Start the dom0 monitoring commands
+print "Starting Benchmarks";
+foreach (@xen_monitor) {
+    system "$_ &" || stop;
+}
+
+my ($pid, @pids);
+foreach (@vms) {
+    my @command;
+    my $request;
+
+    push @command, 'cd /home';                 # Go to the home partition
+    push @command, 'PATH=$PATH:$PWD/tools';    # Add the tools to the PATH
+    foreach (@{$domu_monitor{$_}}) {           # Launch every monitoring
+	push @command, "$_ &";                 #   commands
+    }
+    foreach (@{$domu_run{$_}}) {               # Launch every run commands
+	/^(\w+)/;
+	push @command, "$1 $_";
+    }
+
+    # Kill all the monitoring commands
+    # We excpect these commands create a XXX.pid file indicating their own pid
+    push @command, 'for p in *.pid ; do kill `cat \$p` ; done';
+    push @command, 'sync';
+
+    # Send the commands to the current VM in a separated process so the loop
+    # can continue, and the commands can be sent to all VMs
+    $request = join "\n", @command;
+    $pid = fork;
+    if ($pid == 0) {
+    	open PIPE, '|-', "xen-command $_";
+    	print PIPE $request;
+    	close PIPE;
+    	exit 0;
+    } else {
+    	push @pids, $pid;
+    }
+}
+
+# Wait the benchs complete
+waitpid($_, 0) foreach (@pids);
+system 'for p in *.pid ; do kill `cat $p` ; rm $p ; done';
+
+print "Stopping DomUs";
+system "xen-shutdown $vmsstr" || exit 1;
+
+print "Collecting Data";
+system "rm -rf $result" || exit 1;
+mkdir "$result" || die $!;
+foreach (@vms) {
+    system "xen-get-home $_ $result/$_" || exit 1;
+    system "mv `find $result/$_ -name \"*.log\"` $result/$_/log" || exit 1;
+    system "mv $result/$_/log $result/$_.log" || exit 1;
+    system "rm -rf $result/$_" || exit 1;
+    system "mv $result/$_.log $result/$_" || exit 1;
+    system "rm -rf $_";
+}
+system "mv *.log $result";
+open LOG, '>', "$result/config.xml";
+printf LOG $raw;
+close LOG;

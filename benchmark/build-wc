@@ -1,0 +1,64 @@
+#!/bin/sh
+
+error() {
+    MSG=$1; shift
+    echo "$0: $MSG" 1>&2
+    exit 1
+}
+
+ADDR="git://pdos.csail.mit.edu/mosbench/mosbench.git"
+REPO="mosbench"
+DEST=$1 ; shift
+[ "x$DEST" = "x" ] && DEST='mosbench'
+
+prev="$PWD"
+mkdir "$DEST" || error "cannot create '$DEST'"
+cd "$DEST"
+[ -e "/tmp/$REPO" ] || git clone "$ADDR" "/tmp/$REPO" \
+    || error "cannot clone '$ADDR'"
+[ -e "/tmp/$REPO/metis/obj/app/wc" ] || make -C "/tmp/$REPO/metis/" \
+    "obj/app/wc" >/dev/null 2>/dev/null || error "cannot make wc"
+[ -e "wc" ] || cp "/tmp/$REPO/metis/obj/app/wc" "wc" \
+    || error "cannot copy wc in $PWD"
+
+[ -e "/tmp/$REPO/metis/input-test.txt" ] || \
+    perl -w -e 'print " " . join("", map { chr(65 + int(rand() * 26)) } \
+                (0..int(3 + rand() * 10))) foreach (1..10000)' \
+		    > "/tmp/$REPO/metis/input-test.txt" \
+		    || error "cannot generate input data"
+
+[ -e "/tmp/$REPO/metis/input-simsmall.txt" ] || \
+    perl -w -e 'print " " . join("", map { chr(65 + int(rand() * 26)) } \
+                (0..int(3 + rand() * 10))) foreach (1..100000)' \
+		    > "/tmp/$REPO/metis/input-simsmall.txt" \
+		    || error "cannot generate input data"
+
+[ -e "/tmp/$REPO/metis/input-simlarge.txt" ] || \
+    perl -w -e 'print " " . join("", map { chr(65 + int(rand() * 26)) } \
+                (0..int(3 + rand() * 10))) foreach (1..3000000)' \
+		    > "/tmp/$REPO/metis/input-simlarge.txt" \
+		    || error "cannot generate input data"
+
+[ -e "/tmp/$REPO/metis/input-native.txt" ] || \
+    for i in {1..8} ; do \
+    perl -w -e 'print " " . join("", map { chr(65 + int(rand() * 26)) } \
+                (0..int(3 + rand() * 10))) foreach (1..7500000)' \
+    > "/tmp/$REPO/metis/input-native.$i.txt" & \
+    done \
+    && wait \
+    && cat /tmp/$REPO/metis/input-native.*.txt \
+    > "/tmp/$REPO/metis/input-native.txt" \
+    || error "cannot generate input data"
+
+
+[ -e "input-test.txt" ] || cp "/tmp/$REPO/metis/input-test.txt" . \
+    || error "cannot copy input to $PWD"
+[ -e "input-simsmall.txt" ] || cp "/tmp/$REPO/metis/input-simsmall.txt" . \
+    || error "cannot copy input to $PWD"
+[ -e "input-simlarge.txt" ] || cp "/tmp/$REPO/metis/input-simlarge.txt" . \
+    || error "cannot copy input to $PWD"
+[ -e "input-native.txt" ] || cp "/tmp/$REPO/metis/input-native.txt" . \
+    || error "cannot copy input to $PWD"
+
+
+cd "$prev"
